@@ -17,8 +17,8 @@ class Tensor:
         out = Tensor(self.arr + other.arr, _parents=(self, other), _op='+')
 
         def _backward():
-            self.grad += out.grad
-            other.grad += out.grad
+            self.grad += unbroadcast(out.grad, self.arr.shape)
+            other.grad += unbroadcast(out.grad, other.arr.shape)
 
         out._backward = _backward
         return out
@@ -40,8 +40,8 @@ class Tensor:
         out = Tensor(self.arr * other.arr, _parents=(self, other), _op='*')
 
         def _backward():
-            self.grad += out.grad * other.arr
-            other.grad += out.grad * self.arr
+            self.grad += unbroadcast(out.grad * other.arr, self.arr.shape)
+            other.grad += unbroadcast(out.grad * self.arr, other.arr.shape)
 
         out._backward = _backward
         return out
@@ -145,3 +145,17 @@ class Tensor:
         self.grad = np.ones_like(self.arr, dtype=float)
         for node in reversed(topo):
             node._backward()
+
+
+def unbroadcast(grad, original_shape):
+    # sum over axes that were added (grad has more dims than original)
+    ndims_added = grad.ndim - len(original_shape)
+    for _ in range(ndims_added):
+        grad = grad.sum(axis=0)
+    
+    # sum over axes where original was size-1 (keepdims to preserve rank)
+    for i, size in enumerate(original_shape):
+        if size == 1:
+            grad = grad.sum(axis=i, keepdims=True)
+    
+    return grad
