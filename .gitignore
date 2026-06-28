@@ -1,0 +1,7 @@
+*.ipynb*
+*.env
+*.venv
+venv
+
+*.md
+!READEME.md
