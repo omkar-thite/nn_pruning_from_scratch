@@ -1,3 +1,6 @@
+import numpy as np  
+from engine import Tensor
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Cross-entropy loss — wires into the autograd graph via custom _backward
 # ─────────────────────────────────────────────────────────────────────────────

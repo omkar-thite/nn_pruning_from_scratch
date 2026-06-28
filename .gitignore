@@ -5,3 +5,5 @@ venv
 
 *.md
 !READEME.md
+
+__pycache__

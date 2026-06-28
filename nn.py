@@ -1,3 +1,6 @@
+import numpy as np 
+from engine import Tensor
+
 class Module:
     def zero_grad(self):
         for p in self.parameters():

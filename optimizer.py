@@ -1,3 +1,5 @@
+import numpy as np 
+
 class Adam:
     r"""
     Adam optimiser (Kingma & Ba, 2014).
@@ -8,15 +10,15 @@ class Adam:
  
     Update rule at step t:
         g_t  = ∂L/∂θ                               gradient
-        m_t  = β₁ · m_{t-1} + (1 − β₁) · g_t     biased 1st moment
-        v_t  = β₂ · v_{t-1} + (1 − β₂) · g_t²    biased 2nd moment
-        m̂_t  = m_t / (1 − β₁ᵗ)                   bias-corrected 1st
-        v̂_t  = v_t / (1 − β₂ᵗ)                   bias-corrected 2nd
-        θ_t  = θ_{t-1} − α · m̂_t / (√v̂_t + ε)
+        m_t  = β₁ · m_{t-1} + (1 - β₁) · g_t     biased 1st moment
+        v_t  = β₂ · v_{t-1} + (1 - β₂) · g_t²    biased 2nd moment
+        m̂_t  = m_t / (1 - β₁ᵗ)                   bias-corrected 1st
+        v̂_t  = v_t / (1 - β₂ᵗ)                   bias-corrected 2nd
+        θ_t  = θ_{t-1} - alpha · m̂_t / (√v̂_t + ε)
  
     Args:
         parameters   : iterable of Tensor objects to optimise
-        lr           : learning rate α            (default 1e-3)
+        lr           : learning rate alpha            (default 1e-3)
         beta1        : 1st-moment EMA decay β₁   (default 0.9)
         beta2        : 2nd-moment EMA decay β₂   (default 0.999)
         eps          : numerical stability ε      (default 1e-8)
