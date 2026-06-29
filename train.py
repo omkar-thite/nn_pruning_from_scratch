@@ -6,7 +6,11 @@ from nn import MLP
 from optimizer import Adam
 from loss import cross_entropy
 
+from prune import DynamicPruner
+
 RANDOM_STATE = 42
+np.random.seed(RANDOM_STATE)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Synthetic Dataset: Spirals
@@ -33,12 +37,68 @@ def get_batches(X: np.ndarray, y: np.ndarray, batch_size: int):
         idx = indices[i : i + batch_size]
         yield X[idx], y[idx]
 
+
+def generate_data_multiclass_clf(n_samples=200):
+    """Generates a synthetic dataset for multi-class classification."""
+    X = np.random.randn(n_samples, 20)
+    Y = (np.sum(X**2, axis=1) > 20).astype(int) + (X[:,0] > 0).astype(int)
+    return X, np.clip(Y, 0, 2)
+
+
+def train_pruning(prune=False):
+    X_train, Y_train = get_batches(generate_data_multiclass_clf())
+    X_test, Y_test = get_batches(generate_data_multiclass_clf())
+    
+    model = MLP(20, [100, 100, 3])
+    optimizer = Adam(model.parameters(), lr=0.01)
+    
+    if prune:
+        pruner = DynamicPruner(model, optimizer, final_sparsity=0.9, prune_steps=800)
+        
+    epochs, batch_size = 1500, 150
+    
+    for ep in range(epochs):
+        for b in range(0, len(X_train), batch_size):
+            xb, yb = X_train[b:b+batch_size], Y_train[b:b+batch_size]
+            
+            if prune:
+                pruner.step_prune(xb, yb)
+                
+            optimizer.zero_grad()
+            out = model(Tensor(xb))
+            loss = cross_entropy(out, yb)
+            loss.backward()
+            optimizer.step()
+
+    out = model(Tensor(X_test))
+    preds = np.argmax(out.arr, axis=1)
+    acc = np.mean(preds == Y_test)
+    
+    if prune:
+        remaining_neurons = [model.layers[i].W.arr.shape[1] for i in range(pruner.n_hidden)]
+        print(f"Final Sparse Configuration: Layer 1: {remaining_neurons[0]}/100, Layer 2: {remaining_neurons[1]}/100")
+        
+    return acc
+
+def evaluate_pruning():
+    print("Evaluating Dense Baseline Network...")
+    dense_acc = train_prune(prune=False)
+    
+    print("\nEvaluating Gradient-Pruned Dynamic Network...")
+    sparse_acc = train_and_evaluate(prune=True)
+
+    print(f"\n--- Accuracy Report ---")
+    print(f"Dense Network Target Accuracy: {dense_acc*100:.2f}%")
+    print(f"90% Sparse Network Accuracy:   {sparse_acc*100:.2f}%")
+    print(f"Accuracy Cost of Pruning:      {(dense_acc - sparse_acc)*100:.2f}%")
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Mini-Batched Training Loop
 # ─────────────────────────────────────────────────────────────────────────────
 
-if __name__ == '__main__':
-    np.random.seed(RANDOM_STATE)  # for reproducibility
+def train_and_evaluate_clf(prune=False):
 
     # 1. Prepare Dataset
     N_SAMPLES = 100 
@@ -48,7 +108,7 @@ if __name__ == '__main__':
     
     X_train, y_train = generate_spirals(N_SAMPLES, CLASSES)
 
-    # 2. Initialize Model and Optimizer
+    # Initialize Model and Optimizer
     # 2D input (x, y) -> Hidden 16 -> Hidden 16 -> 3 Classes
     model = MLP(nin=2, nouts=[16, 16, CLASSES])
     opt = Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
@@ -59,7 +119,7 @@ if __name__ == '__main__':
     history_loss = []
     history_acc = []
 
-    # 3. Training Loop
+    # Training Loop
     for epoch in range(1, EPOCHS + 1):
         epoch_loss = 0.0
         epoch_correct = 0
@@ -120,3 +180,11 @@ if __name__ == '__main__':
     plt.title('Mini-Batch Training: Spirals Dataset')
     plt.grid(True, alpha=0.3)
     plt.show()
+
+    return history_loss, history_acc
+
+
+if __name__ == '__main__':
+    if sys.argv[-1] == 'prune':
+        train
+        evaluate_pruning()
