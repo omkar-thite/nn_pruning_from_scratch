@@ -1,7 +1,12 @@
+import os
+import joblib
+
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.datasets import fetch_openml
+
+from sklearn.datasets import load_digits
+from sklearn.model_selection import train_test_split
 
 from engine import Tensor
 from nn import MLP
@@ -42,54 +47,41 @@ def get_batches(X: np.ndarray, y: np.ndarray, batch_size: int):
         yield X[idx], y[idx]
 
 
-def generate_data_multiclass_clf(n_samples=200):
-    """Generates a synthetic dataset for multi-class classification."""
-    X = np.random.randn(n_samples, 20)
-    Y = (np.sum(X**2, axis=1) > 20).astype(int) + (X[:,0] > 0).astype(int)
-    return X, np.clip(Y, 0, 2)
-
-
-def get_mnist_data(num_train=1000, num_test=200):
+def get_and_process_digits(num_train=1000, num_test=200):
     """
-    Downloads, normalizes, and splits the MNIST dataset.
-    Returns subsets by default because scalar-based custom engines (like micrograd) 
-    are computationally heavy and cannot efficiently process the full dataset.
+    Processes the Digits dataset for training and testing.
+    total samples: 1797, 8x8 images of digits (0-9)
+
+    Args:
+        num_train (int): Number of training samples to use.
+        num_test (int): Number of testing samples to use.
     """
-    print("Fetching MNIST dataset via OpenML...")
-    mnist = fetch_openml('mnist_784', version=1, as_frame=False, parser='auto')
+    X, y = load_digits(return_X_y=True)
+
+    X = X / 16.0  # normalize
     
-    # Extract data and labels
-    X = mnist.data.astype(np.float32)
-    y = mnist.target.astype(np.int64)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
 
-    # Normalize pixel values from [0, 255] to [0.0, 1.0]
-    X /= 255.0
-
-    # Split into standard train (60k) and test (10k) allocations
-    X_train_full, X_test_full = X[:60000], X[60000:]
-    y_train_full, y_test_full = y[:60000], y[60000:]
-
-    # Slice smaller subsets for micrograd compatibility
-    X_train = X_train_full[:num_train]
-    y_train = y_train_full[:num_train]
-    X_test = X_test_full[:num_test]
-    y_test = y_test_full[:num_test]
-
-    return X_train, y_train, X_test, y_test
+    return X_train[:num_train], y_train[:num_train], X_test[:num_test], y_test[:num_test]
 
 
-def train_prune(prune=False, batch_size=50, epochs=500):
+def train_nn(prune=False, batch_size=50, epochs=500):
     
-    # Separate data generation to allow fresh batching per epoch
-    X_train, Y_train = generate_spirals(samples_per_class=200, classes=4) #generate_data_multiclass_clf()
-    X_test, Y_test = generate_spirals(samples_per_class=200, classes=4)
+    # 10-class digit images (8×8 flattened → 64 features), 1797 samples
+    # Tests your net on something image-like without images
+    X_train, Y_train, X_test, Y_test = get_and_process_digits(num_train=1000, num_test=200)
 
+    INPUT_SIZE = 64
+    OUTPUT_SIZE = 10
+    
     # Calculate total batches per epoch
     n_batches = len(X_train) // batch_size
     total_train_steps = n_batches * epochs
-    prune_interval = total_train_steps // 4  
+    prune_interval = total_train_steps // 8  
     
-    model = MLP(2, [100, 100, 4])
+    model = MLP(INPUT_SIZE, [100, 100, OUTPUT_SIZE])
     optimizer = Adam(model.parameters(), lr=0.001)
     
     if prune:
@@ -122,10 +114,10 @@ def train_prune(prune=False, batch_size=50, epochs=500):
 
 def evaluate_pruning():
     print("Evaluating Dense Baseline Network...")
-    dense_acc = train_prune(prune=False)
+    dense_acc = train_nn(prune=False)
     
     print("\nEvaluating Gradient-Pruned Dynamic Network...")
-    sparse_acc = train_prune(prune=True)
+    sparse_acc = train_nn(prune=True)
 
     print(f"\n--- Accuracy Report ---")
     print(f"Dense Network Target Accuracy: {dense_acc*100:.2f}%")
@@ -138,7 +130,7 @@ def evaluate_pruning():
 # Mini-Batched Training Loop
 # ─────────────────────────────────────────────────────────────────────────────
 
-def train_and_evaluate_spiral_clf():
+def train_and_evaluate_on_spiral_dataset():
 
     # 1. Prepare Dataset
     N_SAMPLES = 100 
@@ -228,5 +220,5 @@ if __name__ == '__main__':
     if sys.argv[-1] == 'prune':
         evaluate_pruning()
     else:
-        train_and_evaluate_spiral_clf()
+        train_and_evaluate_on_spiral_dataset()
     
