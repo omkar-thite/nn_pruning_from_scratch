@@ -1,5 +1,7 @@
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.datasets import fetch_openml
 
 from engine import Tensor
 from nn import MLP
@@ -7,6 +9,7 @@ from optimizer import Adam
 from loss import cross_entropy
 
 from prune import DynamicPruner
+
 
 RANDOM_STATE = 42
 np.random.seed(RANDOM_STATE)
@@ -32,6 +35,7 @@ def generate_spirals(samples_per_class: int, classes: int, noise: float = 0.2):
 
 def get_batches(X: np.ndarray, y: np.ndarray, batch_size: int):
     """Yields randomly shuffled mini-batches from the dataset."""
+    
     indices = np.random.permutation(len(X))
     for i in range(0, len(X), batch_size):
         idx = indices[i : i + batch_size]
@@ -45,22 +49,57 @@ def generate_data_multiclass_clf(n_samples=200):
     return X, np.clip(Y, 0, 2)
 
 
-def train_pruning(prune=False):
-    X_train, Y_train = get_batches(generate_data_multiclass_clf())
-    X_test, Y_test = get_batches(generate_data_multiclass_clf())
+def get_mnist_data(num_train=1000, num_test=200):
+    """
+    Downloads, normalizes, and splits the MNIST dataset.
+    Returns subsets by default because scalar-based custom engines (like micrograd) 
+    are computationally heavy and cannot efficiently process the full dataset.
+    """
+    print("Fetching MNIST dataset via OpenML...")
+    mnist = fetch_openml('mnist_784', version=1, as_frame=False, parser='auto')
     
-    model = MLP(20, [100, 100, 3])
-    optimizer = Adam(model.parameters(), lr=0.01)
+    # Extract data and labels
+    X = mnist.data.astype(np.float32)
+    y = mnist.target.astype(np.int64)
+
+    # Normalize pixel values from [0, 255] to [0.0, 1.0]
+    X /= 255.0
+
+    # Split into standard train (60k) and test (10k) allocations
+    X_train_full, X_test_full = X[:60000], X[60000:]
+    y_train_full, y_test_full = y[:60000], y[60000:]
+
+    # Slice smaller subsets for micrograd compatibility
+    X_train = X_train_full[:num_train]
+    y_train = y_train_full[:num_train]
+    X_test = X_test_full[:num_test]
+    y_test = y_test_full[:num_test]
+
+    return X_train, y_train, X_test, y_test
+
+
+def train_prune(prune=False, batch_size=50, epochs=500):
+    
+    # Separate data generation to allow fresh batching per epoch
+    X_train, Y_train = generate_spirals(samples_per_class=200, classes=4) #generate_data_multiclass_clf()
+    X_test, Y_test = generate_spirals(samples_per_class=200, classes=4)
+
+    # Calculate total batches per epoch
+    n_batches = len(X_train) // batch_size
+    total_train_steps = n_batches * epochs
+    prune_interval = total_train_steps // 4  
+    
+    model = MLP(2, [100, 100, 4])
+    optimizer = Adam(model.parameters(), lr=0.001)
     
     if prune:
-        pruner = DynamicPruner(model, optimizer, final_sparsity=0.9, prune_steps=800)
-        
-    epochs, batch_size = 1500, 150
-    
-    for ep in range(epochs):
-        for b in range(0, len(X_train), batch_size):
-            xb, yb = X_train[b:b+batch_size], Y_train[b:b+batch_size]
+        pruner = DynamicPruner(model, optimizer, final_sparsity=0.9, prune_steps=total_train_steps, prune_interval=prune_interval)
             
+    for ep in range(epochs):
+        # Re-instantiate the generator for the new epoch
+        train_loader = get_batches(X_train, Y_train, batch_size=batch_size)
+
+        for xb, yb in train_loader:
             if prune:
                 pruner.step_prune(xb, yb)
                 
@@ -70,22 +109,23 @@ def train_pruning(prune=False):
             loss.backward()
             optimizer.step()
 
-    out = model(Tensor(X_test))
-    preds = np.argmax(out.arr, axis=1)
-    acc = np.mean(preds == Y_test)
+        out = model(Tensor(X_test))
+        preds = np.argmax(out.arr, axis=1)
+        acc = np.mean(preds == Y_test)
     
-    if prune:
-        remaining_neurons = [model.layers[i].W.arr.shape[1] for i in range(pruner.n_hidden)]
-        print(f"Final Sparse Configuration: Layer 1: {remaining_neurons[0]}/100, Layer 2: {remaining_neurons[1]}/100")
-        
+        if prune:
+            remaining_neurons = [model.layers[i].W.arr.shape[1] for i in range(pruner.n_hidden)]
+            print(f"Final Sparse Configuration: Layer 1: {remaining_neurons[0]}/100, Layer 2: {remaining_neurons[1]}/100")
+            
     return acc
+
 
 def evaluate_pruning():
     print("Evaluating Dense Baseline Network...")
     dense_acc = train_prune(prune=False)
     
     print("\nEvaluating Gradient-Pruned Dynamic Network...")
-    sparse_acc = train_and_evaluate(prune=True)
+    sparse_acc = train_prune(prune=True)
 
     print(f"\n--- Accuracy Report ---")
     print(f"Dense Network Target Accuracy: {dense_acc*100:.2f}%")
@@ -98,7 +138,7 @@ def evaluate_pruning():
 # Mini-Batched Training Loop
 # ─────────────────────────────────────────────────────────────────────────────
 
-def train_and_evaluate_clf(prune=False):
+def train_and_evaluate_spiral_clf():
 
     # 1. Prepare Dataset
     N_SAMPLES = 100 
@@ -186,5 +226,7 @@ def train_and_evaluate_clf(prune=False):
 
 if __name__ == '__main__':
     if sys.argv[-1] == 'prune':
-        train
         evaluate_pruning()
+    else:
+        train_and_evaluate_spiral_clf()
+    
