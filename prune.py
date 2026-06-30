@@ -110,7 +110,7 @@ class DynamicPruner:
     def step_prune(self, X_batch, Y_batch):
         self.step += 1
         
-        if self.step >= self.prune_steps or self.step % self.prune_interval != 0:
+        if self.step > self.prune_steps or self.step % self.prune_interval != 0:
             return
             
         # Force floating-point arithmetic to prevent integer division zeroing out the multiplier
