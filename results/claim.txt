@@ -1,0 +1,1 @@
+At 90% sparsity, saliency pruning retains 96.90% accuracy vs 97.50% for magnitude pruning (mean over 5 seeds, p=0.3767).

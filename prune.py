@@ -2,14 +2,18 @@ import numpy as np
 from engine import Tensor
 from loss import cross_entropy
 
+from nn import MLP
+from optimizer import Adam
+
 # ── Dynamic Pruning Implementation ───────────────────────────────────────────
 class DynamicPruner:
-    def __init__(self, model: MLP, optimizer: Adam, final_sparsity: float, prune_steps: int, prune_interval: int):
+    def __init__(self, model: MLP, optimizer: Adam, final_sparsity: float, prune_steps: int, prune_interval: int, criterion: str = 'saliency'):
         self.model = model
         self.optimizer = optimizer
         self.final_sparsity = final_sparsity
         self.prune_steps = prune_steps
         self.prune_interval = prune_interval
+        self.criterion = criterion
         self.step = 0
         
         self.n_hidden = len(model.layers) - 1
@@ -133,9 +137,15 @@ class DynamicPruner:
 
             W_grad = self.model.layers[i].W.grad
             W_arr = self.model.layers[i].W.arr
-            
-            # Importance Score for neurons: Σ |W_ij * ∇W_ij| 
-            importance = np.sum(np.abs(W_arr * W_grad), axis=0)
+
+            if self.criterion == 'saliency':
+                # Taylor importance: Σ |W_ij * ∇W_ij|
+                importance = np.sum(np.abs(W_arr * W_grad), axis=0)
+            elif self.criterion == 'magnitude':
+                # Pure magnitude: Σ |W_ij|, ignores the gradient entirely
+                importance = np.sum(np.abs(W_arr), axis=0)
+            else:
+                raise ValueError(f"unknown criterion: {self.criterion}")
 
             mask = np.zeros(n_neurons, dtype=bool)
             if n_keep < n_neurons:

@@ -1,0 +1,14 @@
+{
+  "dense_flops": 35010,
+  "pruned_flops": 4042,
+  "flop_reduction_pct": 88.45472722079406,
+  "dense_time_s": [
+    0.005728800510059955,
+    0.005717787811232321
+  ],
+  "pruned_time_s": [
+    0.000403632440002184,
+    0.0005797457646325253
+  ],
+  "measurement_method": "sparse-aware forward pass on structurally resized weight matrices, NOT dense-times-zero"
+}

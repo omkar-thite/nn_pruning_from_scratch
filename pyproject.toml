@@ -9,8 +9,9 @@ dependencies = [
     "matplotlib>=3.11.0",
     "networkx>=3.6.1",
     "numpy>=2.5.0",
-    "pandas>=3.0.4",
+    "pandas==3.0.3",
     "scikit-learn>=1.9.0",
+    "scipy>=1.18.0",
 ]
 
 [dependency-groups]

@@ -1,12 +1,15 @@
 import os
-import joblib
-
+import time
 import sys
+import csv
+import json
+
 import numpy as np
 import matplotlib.pyplot as plt
 
 from sklearn.datasets import load_digits
 from sklearn.model_selection import train_test_split
+from scipy import stats 
 
 from engine import Tensor
 from nn import MLP
@@ -19,9 +22,125 @@ from prune import DynamicPruner
 RANDOM_STATE = 42
 np.random.seed(RANDOM_STATE)
 
+def count_flops(model):
+    """2*n_in*n_out per matmul (mult+add) + n_out for the bias add, per layer."""
+    total = 0
+    for layer in model.layers:
+        n_in, n_out = layer.W.arr.shape
+        total += 2 * n_in * n_out + n_out
+    return total
 
+def measure_inference_time(model, X, n_repeats=100, warmup=10):
+    x = Tensor(X)
+    for _ in range(warmup):
+        model(x)
+    times = []
+    for _ in range(n_repeats):
+        t0 = time.perf_counter()
+        model(x)
+        times.append(time.perf_counter() - t0)
+    return float(np.mean(times)), float(np.std(times)) 
+
+
+def run_seed_sweep(criterion, n_seeds=5, target_sparsity=0.9, epochs=500, batch_size=50):
+    accs = []
+    for seed in range(n_seeds):
+        np.random.seed(seed)
+        X_train, Y_train, X_test, Y_test = get_and_process_digits(num_train=1000, num_test=200, seed=seed)
+        model = MLP(64, [100, 100, 10])
+        optimizer = Adam(model.parameters(), lr=0.001)
+        n_batches = len(X_train) // batch_size
+        pruning_epochs = int(epochs * 0.7)
+        prune_steps = n_batches * pruning_epochs
+        prune_interval = prune_steps // 8
+        pruner = DynamicPruner(model, optimizer, final_sparsity=target_sparsity,
+                                prune_steps=prune_steps, prune_interval=prune_interval,
+                                criterion=criterion)
+        for ep in range(epochs):
+            for xb, yb in get_batches(X_train, Y_train, batch_size):
+                pruner.step_prune(xb, yb)
+                optimizer.zero_grad()
+                out = model(Tensor(xb))
+                loss = cross_entropy(out, yb)
+                loss.backward()
+                optimizer.step()
+        out = model(Tensor(X_test))
+        acc = np.mean(np.argmax(out.arr, axis=1) == Y_test)
+        accs.append(acc)
+    return np.array(accs)
+
+
+def compare_criteria(n_seeds=5):
+    saliency_accs = run_seed_sweep('saliency', n_seeds=n_seeds)
+    magnitude_accs = run_seed_sweep('magnitude', n_seeds=n_seeds)
+
+    t_stat, p_value = stats.ttest_ind(saliency_accs, magnitude_accs, equal_var=False)  # Welch's
+
+    print(f"Saliency:  {saliency_accs.mean():.4f} ± {saliency_accs.std():.4f}")
+    print(f"Magnitude: {magnitude_accs.mean():.4f} ± {magnitude_accs.std():.4f}")
+    print(f"Δ = {(saliency_accs.mean() - magnitude_accs.mean())*100:.2f} pts, p = {p_value:.4f}")
+    return saliency_accs, magnitude_accs, p_value
+
+def plot_pareto(results, path='pareto_curve.png'):
+    sparsities = sorted(set(r['target_sparsity'] for r in results))
+    means = [np.mean([r['accuracy'] for r in results if r['target_sparsity'] == s]) for s in sparsities]
+    stds = [np.std([r['accuracy'] for r in results if r['target_sparsity'] == s]) for s in sparsities]
+
+    plt.figure(figsize=(7, 5))
+    plt.errorbar(sparsities, means, yerr=stds, marker='o', capsize=4)
+    plt.xlabel('Target Sparsity')
+    plt.ylabel('Test Accuracy')
+    plt.title('Sparsity vs Accuracy (Pareto Curve)')
+    plt.grid(True, alpha=0.3)
+    plt.savefig(path, dpi=150)
+    plt.close()
+
+
+def run_sparsity_sweep(sparsities=(0.0, 0.5, 0.75, 0.9, 0.95), n_seeds=5,
+                        epochs=500, batch_size=50, criterion='saliency'):
+    results = []
+    for target in sparsities:
+        for seed in range(n_seeds):
+            np.random.seed(seed)
+            X_train, Y_train, X_test, Y_test = get_and_process_digits(num_train=1000, num_test=200)
+            model = MLP(64, [100, 100, 10])
+            optimizer = Adam(model.parameters(), lr=0.001)
+            n_batches = len(X_train) // batch_size
+            pruning_epochs = int(epochs * 0.7)
+            prune_steps = n_batches * pruning_epochs
+            prune_interval = max(1, prune_steps // 8)
+
+            if target > 0:
+                pruner = DynamicPruner(model, optimizer, final_sparsity=target,
+                                        prune_steps=prune_steps, prune_interval=prune_interval,
+                                        criterion=criterion)
+            for ep in range(epochs):
+                for xb, yb in get_batches(X_train, Y_train, batch_size):
+                    if target > 0:
+                        pruner.step_prune(xb, yb)
+                    optimizer.zero_grad()
+                    out = model(Tensor(xb))
+                    loss = cross_entropy(out, yb)
+                    loss.backward()
+                    optimizer.step()
+
+            out = model(Tensor(X_test))
+            acc = float(np.mean(np.argmax(out.arr, axis=1) == Y_test))
+
+            achieved = (1 - sum(m.sum() for m in pruner.masks) / sum(len(m) for m in pruner.masks)) if target > 0 else 0.0
+            results.append({'target_sparsity': target, 'achieved_sparsity': achieved,
+                             'seed': seed, 'accuracy': acc, 'criterion': criterion})
+            print(f"  sparsity={target} seed={seed} acc={acc:.4f}")
+    return results
+
+
+def save_results_csv(results, path):
+    with open(path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=results[0].keys())
+        writer.writeheader()
+        writer.writerows(results)
 # ─────────────────────────────────────────────────────────────────────────────
-# Synthetic Dataset: Spirals
+# Dataset
 # ─────────────────────────────────────────────────────────────────────────────
 
 def generate_spirals(samples_per_class: int, classes: int, noise: float = 0.2):
@@ -47,7 +166,7 @@ def get_batches(X: np.ndarray, y: np.ndarray, batch_size: int):
         yield X[idx], y[idx]
 
 
-def get_and_process_digits(num_train=1000, num_test=200):
+def get_and_process_digits(num_train=1000, num_test=200, seed=RANDOM_STATE):
     """
     Processes the Digits dataset for training and testing.
     total samples: 1797, 8x8 images of digits (0-9)
@@ -61,7 +180,7 @@ def get_and_process_digits(num_train=1000, num_test=200):
     X = X / 16.0  # normalize
     
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
+        X, y, test_size=0.2, random_state=seed, stratify=y
     )
 
     return X_train[:num_train], y_train[:num_train], X_test[:num_test], y_test[:num_test]
@@ -114,20 +233,62 @@ def train_nn(prune=False, batch_size=50, epochs=500):
             remaining_neurons = [model.layers[i].W.arr.shape[1] for i in range(pruner.n_hidden)]
             print(f"Final Sparse Configuration: Layer 1: {remaining_neurons[0]}/100, Layer 2: {remaining_neurons[1]}/100")
             
-    return acc
+    return acc, model
 
 
 def evaluate_pruning():
-    print("Evaluating Dense Baseline Network...")
-    dense_acc = train_nn(prune=False)
-    
-    print("\nEvaluating Gradient-Pruned Dynamic Network...")
-    sparse_acc = train_nn(prune=True)
+    os.makedirs('results', exist_ok=True)
 
-    print(f"\n--- Accuracy Report ---")
-    print(f"Dense Network Target Accuracy: {dense_acc*100:.2f}%")
-    print(f"90% Sparse Network Accuracy:   {sparse_acc*100:.2f}%")
-    print(f"Accuracy Cost of Pruning:      {(dense_acc - sparse_acc)*100:.2f}%")
+    SWEEP_EPOCHS = 150   # enough to show the shape of the curve, not full convergence
+    FULL_EPOCHS = 500    
+
+    # Part 1: Pareto curve
+    print("Running sparsity sweep (saliency criterion)...")
+    sweep_results = run_sparsity_sweep(criterion='saliency', epochs=SWEEP_EPOCHS)
+    save_results_csv(sweep_results, 'results/pareto_raw.csv')
+    plot_pareto(sweep_results, 'results/pareto_curve.png')
+
+    # Part 2: real cost measurement at 90% sparsity
+    print("\nMeasuring real cost (FLOPs, wall-clock) at 90% sparsity...")
+    X_train, Y_train, X_test, Y_test = get_and_process_digits(num_train=1000, num_test=200)
+    
+    dense_acc, dense_model = train_nn(prune=False)
+    pruned_acc, pruned_model = train_nn(prune=True)
+
+    dense_flops = count_flops(dense_model)
+    pruned_flops = count_flops(pruned_model)
+    dense_t_mean, dense_t_std = measure_inference_time(dense_model, X_test)
+    pruned_t_mean, pruned_t_std = measure_inference_time(pruned_model, X_test)
+
+    cost_report = {
+        'dense_flops': dense_flops, 'pruned_flops': pruned_flops,
+        'flop_reduction_pct': 100 * (1 - pruned_flops / dense_flops),
+        'dense_time_s': [dense_t_mean, dense_t_std],
+        'pruned_time_s': [pruned_t_mean, pruned_t_std],
+        'measurement_method': 'sparse-aware forward pass on structurally resized weight matrices, NOT dense-times-zero'
+    }
+    with open('results/cost_report.json', 'w') as f:
+        json.dump(cost_report, f, indent=2)
+
+    # Part 3: baseline comparison, saliency vs magnitude, at 90% sparsity
+    print("\nComparing saliency vs magnitude pruning across seeds...")
+    saliency_accs, magnitude_accs, p_value = compare_criteria(n_seeds=5)
+    comparison = {
+        'saliency_accs': saliency_accs.tolist(), 'magnitude_accs': magnitude_accs.tolist(),
+        'saliency_mean': float(saliency_accs.mean()), 'saliency_std': float(saliency_accs.std()),
+        'magnitude_mean': float(magnitude_accs.mean()), 'magnitude_std': float(magnitude_accs.std()),
+        'p_value': float(p_value)
+    }
+    with open('results/baseline_comparison.json', 'w') as f:
+        json.dump(comparison, f, indent=2)
+
+    # Part 4: falsifiable claim, generated from the actual numbers above
+    claim = (f"At 90% sparsity, saliency pruning retains {comparison['saliency_mean']*100:.2f}% "
+             f"accuracy vs {comparison['magnitude_mean']*100:.2f}% for magnitude pruning "
+             f"(mean over {len(saliency_accs)} seeds, p={p_value:.4f}).")
+    print("\n" + claim)
+    with open('results/claim.txt', 'w') as f:
+        f.write(claim)
 
 
 
