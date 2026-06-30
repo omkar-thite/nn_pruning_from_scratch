@@ -78,14 +78,19 @@ def train_nn(prune=False, batch_size=50, epochs=500):
     
     # Calculate total batches per epoch
     n_batches = len(X_train) // batch_size
-    total_train_steps = n_batches * epochs
-    prune_interval = total_train_steps // 8  
+    
+    # Restrict pruning to the first 70% of epochs to guarantee a dense fine-tuning phase
+    pruning_epochs = int(epochs * 0.7)
+    prune_steps = n_batches * pruning_epochs
+    
+    # Ensure interval divides perfectly into prune_steps so the final pruning event hits exactly 1.0 sparsity
+    prune_interval = prune_steps // 8
     
     model = MLP(INPUT_SIZE, [100, 100, OUTPUT_SIZE])
     optimizer = Adam(model.parameters(), lr=0.001)
     
     if prune:
-        pruner = DynamicPruner(model, optimizer, final_sparsity=0.9, prune_steps=total_train_steps, prune_interval=prune_interval)
+        pruner = DynamicPruner(model, optimizer, final_sparsity=0.9, prune_steps=prune_steps, prune_interval=prune_interval)
             
     for ep in range(epochs):
         # Re-instantiate the generator for the new epoch

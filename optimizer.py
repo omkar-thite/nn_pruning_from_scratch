@@ -1,4 +1,5 @@
 import numpy as np 
+from typing import List
 
 class Adam:
     r"""
@@ -17,7 +18,7 @@ class Adam:
         θ_t  = θ_{t-1} - alpha · m̂_t / (√v̂_t + ε)
  
     Args:
-        parameters   : iterable of Tensor objects to optimise
+        parameters   : Tensor objects to optimise
         lr           : learning rate alpha            (default 1e-3)
         beta1        : 1st-moment EMA decay β₁   (default 0.9)
         beta2        : 2nd-moment EMA decay β₂   (default 0.999)
@@ -40,40 +41,33 @@ class Adam:
         self.beta2        = beta2
         self.eps          = eps
         self.weight_decay = weight_decay
-        self.t            = 0          # global step counter
  
         # Allocate moment buffers once — same shape as each parameter
         self.m = [np.zeros_like(p.arr, dtype=float) for p in self.parameters]
         self.v = [np.zeros_like(p.arr, dtype=float) for p in self.parameters]
- 
-    # ── public API ──────────────────────────────────────────────────────────
- 
+        self.t = [np.zeros_like(p.arr, dtype=int) for p in self.parameters]
+
     def step(self):
         """Apply one Adam update to every tracked parameter."""
-        self.t += 1
- 
-        # Scalar bias-correction denominators — computed once per step
-        bc1 = 1.0 - self.beta1 ** self.t   # → 1 − β₁ᵗ
-        bc2 = 1.0 - self.beta2 ** self.t   # → 1 − β₂ᵗ
- 
         for idx, p in enumerate(self.parameters):
-            g = p.grad.copy()              # copy to avoid aliasing issues
- 
-            # Optional AdamW-style weight decay: fold λθ into the gradient
+            g = p.grad.copy()
+
             if self.weight_decay:
                 g += self.weight_decay * p.arr
- 
-            # ── Step 1: update biased moment estimates ──────────────────
+
+            # Every active element advances its own counter by 1 each call.
+            self.t[idx] += 1
+
             self.m[idx] = self.beta1 * self.m[idx] + (1.0 - self.beta1) * g
             self.v[idx] = self.beta2 * self.v[idx] + (1.0 - self.beta2) * g ** 2
- 
-            # ── Step 2: bias correction ─────────────────────────────────
-            #   Early steps: β₁ᵗ ≈ 1, so bc1 ≈ 0 → m̂ is amplified to
-            #   undo the initialisation-at-zero bias in m.
+
+            # Elementwise bias correction using each element's own t.
+            bc1 = 1.0 - self.beta1 ** self.t[idx]
+            bc2 = 1.0 - self.beta2 ** self.t[idx]
+
             m_hat = self.m[idx] / bc1
             v_hat = self.v[idx] / bc2
- 
-            # ── Step 3: update parameter (mutates the underlying ndarray) ─
+
             p.arr -= self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
  
     def zero_grad(self):
@@ -82,8 +76,9 @@ class Adam:
             p.grad = np.zeros_like(p.arr, dtype=float)
  
     def __repr__(self) -> str:
+        t_max = max((t.max() for t in self.t), default=0)
         return (
             f"Adam(lr={self.lr}, β₁={self.beta1}, β₂={self.beta2}, "
-            f"ε={self.eps}, weight_decay={self.weight_decay}, t={self.t})"
+            f"ε={self.eps}, weight_decay={self.weight_decay}, t_max={t_max})"
         )
  

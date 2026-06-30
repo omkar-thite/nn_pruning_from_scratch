@@ -17,6 +17,7 @@ class DynamicPruner:
         self.master_W, self.master_b = [], []
         self.master_m_W, self.master_m_b = [], []
         self.master_v_W, self.master_v_b = [], []
+        self.master_t_W, self.master_t_b = [], []   # NEW: per-element step counters
 
         self.populate_initial_state()
 
@@ -35,6 +36,8 @@ class DynamicPruner:
             self.master_m_b.append(self.optimizer.m[2*i+1].copy())
             self.master_v_W.append(self.optimizer.v[2*i].copy())
             self.master_v_b.append(self.optimizer.v[2*i+1].copy())
+            self.master_t_W.append(self.optimizer.t[2*i].copy())
+            self.master_t_b.append(self.optimizer.t[2*i+1].copy())
 
 
     def sync_to_master(self):
@@ -48,19 +51,24 @@ class DynamicPruner:
                 self.master_W[i][:, col_mask] = layer.W.arr
                 self.master_m_W[i][:, col_mask] = self.optimizer.m[2*i]
                 self.master_v_W[i][:, col_mask] = self.optimizer.v[2*i]
+                self.master_t_W[i][:, col_mask] = self.optimizer.t[2*i]
             elif i == self.n_hidden:
                 self.master_W[i][row_mask, :] = layer.W.arr
                 self.master_m_W[i][row_mask, :] = self.optimizer.m[2*i]
                 self.master_v_W[i][row_mask, :] = self.optimizer.v[2*i]
+                self.master_t_W[i][row_mask, :] = self.optimizer.t[2*i]
             else:
                 idx = np.ix_(row_mask, col_mask)
                 self.master_W[i][idx] = layer.W.arr
                 self.master_m_W[i][idx] = self.optimizer.m[2*i]
                 self.master_v_W[i][idx] = self.optimizer.v[2*i]
+                self.master_t_W[i][idx] = self.optimizer.t[2*i]
 
             self.master_b[i][:, col_mask] = layer.b.arr
             self.master_m_b[i][:, col_mask] = self.optimizer.m[2*i+1]
             self.master_v_b[i][:, col_mask] = self.optimizer.v[2*i+1]
+            self.master_t_b[i][:, col_mask] = self.optimizer.t[2*i+1]
+
 
 
     def sync_to_network(self):
@@ -74,19 +82,23 @@ class DynamicPruner:
                 layer.W.arr = self.master_W[i][:, col_mask].copy()  # only keep columns corresponding to active neurons in the current layer
                 self.optimizer.m[2*i] = self.master_m_W[i][:, col_mask].copy()
                 self.optimizer.v[2*i] = self.master_v_W[i][:, col_mask].copy()
+                self.optimizer.t[2*i] = self.master_t_W[i][:, col_mask].copy()
             elif i == self.n_hidden:
                 layer.W.arr = self.master_W[i][row_mask, :].copy()   # only keep rows corresponding to active neurons in the previous layer
                 self.optimizer.m[2*i] = self.master_m_W[i][row_mask, :].copy()
                 self.optimizer.v[2*i] = self.master_v_W[i][row_mask, :].copy()
+                self.optimizer.t[2*i] = self.master_t_W[i][row_mask, :].copy()
             else:
                 idx = np.ix_(row_mask, col_mask)
                 layer.W.arr = self.master_W[i][idx].copy()
                 self.optimizer.m[2*i] = self.master_m_W[i][idx].copy()
                 self.optimizer.v[2*i] = self.master_v_W[i][idx].copy()
+                self.optimizer.t[2*i] = self.master_t_W[i][idx].copy()
 
             layer.b.arr = self.master_b[i][:, col_mask].copy()
             self.optimizer.m[2*i+1] = self.master_m_b[i][:, col_mask].copy()
             self.optimizer.v[2*i+1] = self.master_v_b[i][:, col_mask].copy()
+            self.optimizer.t[2*i+1] = self.master_t_b[i][:, col_mask].copy()
 
         self.model.zero_grad()
 
@@ -122,7 +134,7 @@ class DynamicPruner:
             W_grad = self.model.layers[i].W.grad
             W_arr = self.model.layers[i].W.arr
             
-            # Score: Σ |W_ij * ∇W_ij| 
+            # Importance Score for neurons: Σ |W_ij * ∇W_ij| 
             importance = np.sum(np.abs(W_arr * W_grad), axis=0)
 
             mask = np.zeros(n_neurons, dtype=bool)
@@ -134,6 +146,12 @@ class DynamicPruner:
                 mask[:] = True
                 
             self.masks[i] = mask
+
+            pruned = ~mask
+            self.master_t_b[i][:, pruned] = 0
+            self.master_t_W[i][:, pruned] = 0      # output side (columns of layer i)
+            self.master_t_W[i+1][pruned, :] = 0    # input side (rows of layer i+1)
+
 
         # Slice sub-matrices and inject entirely reconfigured dynamic network
         self.sync_to_network()
